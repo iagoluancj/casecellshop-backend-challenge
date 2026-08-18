@@ -77,7 +77,10 @@ describe("POST /checkout", () => {
     expect(outbox).toHaveLength(1);
     expect(outbox[0]?.type).toBe("PROCESS_ORDER");
     expect(outbox[0]?.status).toBe("PENDING");
-    expect(outbox[0]?.payload).toEqual({ orderId: body.orderId });
+    expect(outbox[0]?.payload).toMatchObject({ orderId: body.orderId });
+    expect(
+      typeof (outbox[0]?.payload as { correlationId?: string }).correlationId,
+    ).toBe("string");
 
     const updated = await prisma.product.findUniqueOrThrow({
       where: { id: product.id },

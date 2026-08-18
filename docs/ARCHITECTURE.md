@@ -137,12 +137,15 @@ sequenceDiagram
 
 ## Observabilidade
 
+Instrumentação atual: `docs/OBSERVABILITY.md`.
+
 - logs estruturados
 - `requestId` / `correlationId`
 - métricas de cache
 - métricas de checkout
 - fila e worker
 - latência e falhas da integração com o ERP
+- `GET /metrics` (Prometheus)
 
 ## Decisões técnicas
 

@@ -2,6 +2,14 @@ import type { FastifyBaseLogger } from "fastify";
 import { ERP_TIMEOUT_MS } from "../config.js";
 import { ErpTimeoutError, FakeErp } from "../integrations/fake-erp.js";
 import { prisma } from "../lib/prisma.js";
+import {
+  erpRequestDurationSeconds,
+  erpRequestsTotal,
+  stockCompensationsTotal,
+  workerJobsTotal,
+  workerProcessingDurationSeconds,
+  workerRetriesTotal,
+} from "../observability/metrics.js";
 import { invalidateProductsCache } from "./product-service.js";
 
 export type ProcessOrderDeps = {
@@ -9,7 +17,25 @@ export type ProcessOrderDeps = {
   logger: FastifyBaseLogger;
   isLastAttempt: boolean;
   timeoutMs?: number;
+  correlationId?: string;
+  outboxEventId?: string;
+  attempt?: number;
 };
+
+function durationMsSince(startedAt: bigint): number {
+  return Number(process.hrtime.bigint() - startedAt) / 1e6;
+}
+
+function durationSecondsSince(startedAt: bigint): number {
+  return Number(process.hrtime.bigint() - startedAt) / 1e9;
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (error instanceof Error) {
+    return error.name;
+  }
+  return undefined;
+}
 
 async function withTimeout<T>(
   run: (signal: AbortSignal) => Promise<T>,
@@ -33,6 +59,7 @@ async function withTimeout<T>(
 export async function failOrderAndReleaseStock(
   orderId: string,
   logger: FastifyBaseLogger,
+  correlationId?: string,
 ): Promise<boolean> {
   const released = await prisma.$transaction(async (tx) => {
     const claimed = await tx.order.updateMany({
@@ -67,15 +94,76 @@ export async function failOrderAndReleaseStock(
   });
 
   if (released) {
-    logger.info({ event: "order_failed", orderId }, "Order marked FAILED");
+    stockCompensationsTotal.inc();
     logger.info(
-      { event: "stock_compensation_executed", orderId },
+      { event: "stock_compensation_completed", orderId, correlationId },
       "Local stock restored after definitive ERP failure",
     );
     await invalidateProductsCache(logger);
+  } else {
+    logger.info(
+      { event: "stock_compensation_skipped", orderId, correlationId },
+      "Stock compensation skipped",
+    );
   }
 
   return released;
+}
+
+async function callErp(
+  orderId: string,
+  deps: ProcessOrderDeps,
+  timeoutMs: number,
+): Promise<void> {
+  const startedAt = process.hrtime.bigint();
+  deps.logger.info(
+    {
+      event: "erp_request_started",
+      orderId,
+      correlationId: deps.correlationId,
+      attempt: deps.attempt,
+    },
+    "ERP request started",
+  );
+
+  try {
+    await withTimeout(
+      (signal) => deps.erp.processOrder(orderId, signal),
+      timeoutMs,
+    );
+    const durationSeconds = durationSecondsSince(startedAt);
+    erpRequestsTotal.inc({ result: "success" });
+    erpRequestDurationSeconds.observe({ result: "success" }, durationSeconds);
+    deps.logger.info(
+      {
+        event: "erp_request_completed",
+        orderId,
+        correlationId: deps.correlationId,
+        durationMs: durationSeconds * 1000,
+        attempt: deps.attempt,
+      },
+      "ERP request completed",
+    );
+  } catch (error) {
+    const durationSeconds = durationSecondsSince(startedAt);
+    const timedOut = error instanceof ErpTimeoutError;
+    const result = timedOut ? "timeout" : "error";
+    erpRequestsTotal.inc({ result });
+    erpRequestDurationSeconds.observe({ result }, durationSeconds);
+    deps.logger.error(
+      {
+        event: timedOut ? "erp_timeout" : "erp_error",
+        orderId,
+        correlationId: deps.correlationId,
+        durationMs: durationSeconds * 1000,
+        attempt: deps.attempt,
+        errorCode: errorCode(error),
+        err: error,
+      },
+      timedOut ? "ERP timed out" : "ERP call failed",
+    );
+    throw error;
+  }
 }
 
 export async function processOrder(
@@ -93,7 +181,12 @@ export async function processOrder(
 
   if (order.status === "COMPLETED" || order.status === "FAILED") {
     deps.logger.info(
-      { event: "worker_completed", orderId, status: order.status },
+      {
+        event: "order_processing_completed",
+        orderId,
+        correlationId: deps.correlationId,
+        status: order.status,
+      },
       "Skipping already finished order",
     );
     return;
@@ -106,41 +199,72 @@ export async function processOrder(
     });
   }
 
-  deps.logger.info({ event: "worker_started", orderId }, "Worker started order");
+  const processingStartedAt = process.hrtime.bigint();
+  deps.logger.info(
+    {
+      event: "order_processing_started",
+      orderId,
+      correlationId: deps.correlationId,
+      outboxEventId: deps.outboxEventId,
+      attempt: deps.attempt,
+    },
+    "Worker started order",
+  );
 
   try {
-    await withTimeout(
-      (signal) => deps.erp.processOrder(orderId, signal),
-      timeoutMs,
-    );
+    await callErp(orderId, deps, timeoutMs);
     await prisma.order.update({
       where: { id: orderId },
       data: { status: "COMPLETED" },
     });
-    deps.logger.info(
-      { event: "order_completed", orderId },
-      "Order completed after ERP success",
+    workerJobsTotal.inc({ result: "completed" });
+    workerProcessingDurationSeconds.observe(
+      { result: "completed" },
+      durationSecondsSince(processingStartedAt),
     );
     deps.logger.info(
-      { event: "worker_completed", orderId },
+      {
+        event: "order_processing_completed",
+        orderId,
+        correlationId: deps.correlationId,
+        durationMs: durationMsSince(processingStartedAt),
+        attempt: deps.attempt,
+      },
       "Worker finished order",
     );
   } catch (error) {
-    const timedOut = error instanceof ErpTimeoutError;
-    deps.logger.error(
-      {
-        event: timedOut ? "erp_timeout" : "erp_error",
-        orderId,
-        err: error,
-      },
-      timedOut ? "ERP timed out" : "ERP call failed",
-    );
-
     if (deps.isLastAttempt) {
-      await failOrderAndReleaseStock(orderId, deps.logger);
-    } else {
+      await failOrderAndReleaseStock(orderId, deps.logger, deps.correlationId);
+      workerJobsTotal.inc({ result: "failed" });
+      workerProcessingDurationSeconds.observe(
+        { result: "failed" },
+        durationSecondsSince(processingStartedAt),
+      );
       deps.logger.error(
-        { event: "worker_retry", orderId, err: error },
+        {
+          event: "order_processing_failed",
+          orderId,
+          correlationId: deps.correlationId,
+          outboxEventId: deps.outboxEventId,
+          durationMs: durationMsSince(processingStartedAt),
+          attempt: deps.attempt,
+          errorCode: errorCode(error),
+          err: error,
+        },
+        "Worker exhausted retries",
+      );
+    } else {
+      workerRetriesTotal.inc();
+      deps.logger.error(
+        {
+          event: "order_processing_retry",
+          orderId,
+          correlationId: deps.correlationId,
+          outboxEventId: deps.outboxEventId,
+          attempt: deps.attempt,
+          errorCode: errorCode(error),
+          err: error,
+        },
         "Worker will retry order processing",
       );
     }

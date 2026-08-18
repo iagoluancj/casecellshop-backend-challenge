@@ -30,7 +30,7 @@ describe("Outbox publisher", () => {
       data: {
         orderId: order.id,
         type: "PROCESS_ORDER",
-        payload: { orderId: order.id },
+        payload: { orderId: order.id, correlationId: "corr-outbox-ok" },
       },
     });
 
@@ -49,6 +49,7 @@ describe("Outbox publisher", () => {
     expect(added[0]?.data).toEqual({
       orderId: order.id,
       outboxEventId: outbox.id,
+      correlationId: "corr-outbox-ok",
     });
     expect(added[0]?.opts).toMatchObject({ jobId: outbox.id, attempts: 3 });
 

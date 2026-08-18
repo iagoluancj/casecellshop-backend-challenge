@@ -9,6 +9,7 @@ import {
   createDefaultFakeErp,
   type FakeErp,
 } from "../integrations/fake-erp.js";
+import type { ProcessOrderJobData } from "../jobs/order-job.js";
 import {
   createBullmqConnection,
   type BullmqPrefixOptions,
@@ -18,19 +19,12 @@ import {
   processOrder,
 } from "../services/process-order-service.js";
 
-type OrderJobData = {
-  orderId: string;
-  outboxEventId?: string;
-};
-
-function maxAttempts(job: Job<OrderJobData>): number {
+function maxAttempts(job: Job<ProcessOrderJobData>): number {
   return job.opts.attempts ?? ORDER_JOB_ATTEMPTS;
 }
 
-function isLastAttempt(job: Job<OrderJobData>): boolean {
+function isLastAttempt(job: Job<ProcessOrderJobData>): boolean {
   const attempts = maxAttempts(job);
-  // BullMQ 6: attemptsStarted increments when the job becomes active;
-  // attemptsMade is previous failures. Using both avoids a wrong FAILED/retry.
   const currentAttempt = Math.max(job.attemptsStarted, job.attemptsMade + 1);
   return currentAttempt >= attempts;
 }
@@ -42,14 +36,24 @@ export function startOrderWorker(
 ) {
   const connection = createBullmqConnection();
 
-  const worker = new Worker<OrderJobData>(
+  const worker = new Worker<ProcessOrderJobData>(
     ORDER_QUEUE_NAME,
     async (job) => {
+      const correlationId = job.data.correlationId;
+      const jobLogger = logger.child({
+        correlationId,
+        orderId: job.data.orderId,
+        outboxEventId: job.data.outboxEventId,
+      });
+
       await processOrder(job.data.orderId, {
         erp,
-        logger,
+        logger: jobLogger,
         isLastAttempt: isLastAttempt(job),
         timeoutMs: ERP_TIMEOUT_MS,
+        correlationId,
+        outboxEventId: job.data.outboxEventId,
+        attempt: job.attemptsStarted,
       });
     },
     {
@@ -61,10 +65,12 @@ export function startOrderWorker(
   worker.on("failed", (job, error) => {
     logger.error(
       {
-        event: "worker_failure",
+        event: "order_processing_failed",
         orderId: job?.data.orderId,
         outboxEventId: job?.data.outboxEventId,
-        attemptsMade: job?.attemptsMade,
+        correlationId: job?.data.correlationId,
+        attempt: job?.attemptsMade,
+        errorCode: error.name,
         err: error,
       },
       "Order worker job failed",
@@ -75,10 +81,15 @@ export function startOrderWorker(
     }
 
     void job.getState().then(async (state) => {
-      // Intermediate retries go back to delayed/waiting. Only the last
-      // failure stays in the failed set — that's when we mark Order FAILED.
       if (state === "failed") {
-        await failOrderAndReleaseStock(job.data.orderId, logger);
+        await failOrderAndReleaseStock(
+          job.data.orderId,
+          logger.child({
+            correlationId: job.data.correlationId,
+            orderId: job.data.orderId,
+          }),
+          job.data.correlationId,
+        );
       }
     });
   });

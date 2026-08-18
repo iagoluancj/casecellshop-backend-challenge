@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import type { FastifyBaseLogger } from "fastify";
 import type { Queue } from "bullmq";
 import {
@@ -6,7 +7,26 @@ import {
   ORDER_JOB_NAME,
   OUTBOX_POLL_INTERVAL_MS,
 } from "../config.js";
+import type {
+  ProcessOrderJobData,
+  ProcessOrderOutboxPayload,
+} from "../jobs/order-job.js";
 import { prisma } from "../lib/prisma.js";
+import {
+  outboxPublishedTotal,
+  outboxPublishFailuresTotal,
+} from "../observability/metrics.js";
+
+function readOutboxPayload(payload: unknown): ProcessOrderOutboxPayload {
+  const data = payload as { orderId?: string; correlationId?: string };
+  return {
+    orderId: typeof data.orderId === "string" ? data.orderId : "",
+    correlationId:
+      typeof data.correlationId === "string" && data.correlationId.length > 0
+        ? data.correlationId
+        : randomUUID(),
+  };
+}
 
 export async function publishPendingOutbox(
   queue: Queue,
@@ -19,29 +39,37 @@ export async function publishPendingOutbox(
   });
 
   for (const event of events) {
-    const payload = event.payload as { orderId?: string };
-    const orderId = payload.orderId ?? event.orderId;
+    const payload = readOutboxPayload(event.payload);
+    const orderId = payload.orderId || event.orderId;
+    const correlationId = payload.correlationId;
 
     logger.info(
-      { event: "outbox_found", outboxEventId: event.id, orderId },
+      {
+        event: "outbox_publish_started",
+        outboxEventId: event.id,
+        orderId,
+        correlationId,
+      },
       "Pending outbox event found",
     );
 
     try {
-      await queue.add(
-        ORDER_JOB_NAME,
-        { orderId, outboxEventId: event.id },
-        {
-          jobId: event.id,
-          attempts: ORDER_JOB_ATTEMPTS,
-          backoff: {
-            type: "exponential",
-            delay: ORDER_JOB_BACKOFF_MS,
-          },
-          removeOnComplete: 100,
-          removeOnFail: 100,
+      const job: ProcessOrderJobData = {
+        orderId,
+        outboxEventId: event.id,
+        correlationId,
+      };
+
+      await queue.add(ORDER_JOB_NAME, job, {
+        jobId: event.id,
+        attempts: ORDER_JOB_ATTEMPTS,
+        backoff: {
+          type: "exponential",
+          delay: ORDER_JOB_BACKOFF_MS,
         },
-      );
+        removeOnComplete: 100,
+        removeOnFail: 100,
+      });
 
       await prisma.outboxEvent.updateMany({
         where: { id: event.id, status: "PENDING" },
@@ -51,8 +79,14 @@ export async function publishPendingOutbox(
         },
       });
 
+      outboxPublishedTotal.inc();
       logger.info(
-        { event: "outbox_published", outboxEventId: event.id, orderId },
+        {
+          event: "outbox_published",
+          outboxEventId: event.id,
+          orderId,
+          correlationId,
+        },
         "Outbox event published to queue",
       );
     } catch (error) {
@@ -68,8 +102,14 @@ export async function publishPendingOutbox(
             publishedAt: new Date(),
           },
         });
+        outboxPublishedTotal.inc();
         logger.info(
-          { event: "outbox_published", outboxEventId: event.id, orderId },
+          {
+            event: "outbox_published",
+            outboxEventId: event.id,
+            orderId,
+            correlationId,
+          },
           "Outbox event already in queue, marked published",
         );
         continue;
@@ -80,11 +120,14 @@ export async function publishPendingOutbox(
         data: { attempts: { increment: 1 } },
       });
 
+      outboxPublishFailuresTotal.inc();
       logger.error(
         {
-          event: "outbox_publication_failed",
+          event: "outbox_publish_failed",
           outboxEventId: event.id,
           orderId,
+          correlationId,
+          errorCode: error instanceof Error ? error.name : undefined,
           err: error,
         },
         "Failed to publish outbox event",

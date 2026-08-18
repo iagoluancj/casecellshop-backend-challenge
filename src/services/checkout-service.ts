@@ -3,7 +3,9 @@ import type { FastifyBaseLogger } from "fastify";
 import { OUTBOX_TYPE_PROCESS_ORDER } from "../config.js";
 import { Prisma } from "../generated/prisma/client.js";
 import { HttpError } from "../http-error.js";
+import type { ProcessOrderOutboxPayload } from "../jobs/order-job.js";
 import { prisma } from "../lib/prisma.js";
+import { checkoutTotal } from "../observability/metrics.js";
 import { invalidateProductsCache } from "./product-service.js";
 
 export type CheckoutItemInput = {
@@ -42,6 +44,12 @@ function isUniqueConstraintError(error: unknown): boolean {
   );
 }
 
+function recordCheckout(
+  result: "accepted" | "insufficient_stock" | "idempotent_replay" | "error",
+) {
+  checkoutTotal.inc({ result });
+}
+
 async function existingCheckoutResponse(
   idempotencyKey: string,
   fingerprint: string,
@@ -72,16 +80,28 @@ export async function checkout(
   idempotencyKey: string,
   items: CheckoutItemInput[],
   logger: FastifyBaseLogger,
+  correlationId: string,
 ): Promise<CheckoutAccepted> {
+  logger.info({ event: "checkout_received", correlationId }, "Checkout received");
+
   const normalizedItems = normalizeCheckoutItems(items);
   const fingerprint = createCheckoutFingerprint(normalizedItems);
 
-  const replay = await existingCheckoutResponse(idempotencyKey, fingerprint);
-  if (replay) {
-    return replay;
-  }
-
   try {
+    const replay = await existingCheckoutResponse(idempotencyKey, fingerprint);
+    if (replay) {
+      logger.info(
+        {
+          event: "checkout_idempotent_replay",
+          orderId: replay.orderId,
+          correlationId,
+        },
+        "Checkout replayed from existing order",
+      );
+      recordCheckout("idempotent_replay");
+      return replay;
+    }
+
     const order = await prisma.$transaction(async (tx) => {
       const productIds = normalizedItems.map((item) => item.productId);
       const products = await tx.product.findMany({
@@ -141,7 +161,7 @@ export async function checkout(
         };
       });
 
-      const order = await tx.order.create({
+      const created = await tx.order.create({
         data: {
           idempotencyKey,
           requestFingerprint: fingerprint,
@@ -153,18 +173,29 @@ export async function checkout(
         },
       });
 
+      const payload: ProcessOrderOutboxPayload = {
+        orderId: created.id,
+        correlationId,
+      };
+
       await tx.outboxEvent.create({
         data: {
-          orderId: order.id,
+          orderId: created.id,
           type: OUTBOX_TYPE_PROCESS_ORDER,
-          payload: { orderId: order.id },
+          payload,
         },
       });
 
-      return order;
+      return created;
     });
 
     await invalidateProductsCache(logger);
+
+    logger.info(
+      { event: "checkout_accepted", orderId: order.id, correlationId },
+      "Checkout accepted",
+    );
+    recordCheckout("accepted");
 
     return {
       orderId: order.id,
@@ -177,10 +208,54 @@ export async function checkout(
         fingerprint,
       );
       if (recovered) {
+        logger.info(
+          {
+            event: "checkout_idempotent_replay",
+            orderId: recovered.orderId,
+            correlationId,
+          },
+          "Checkout replayed after unique constraint",
+        );
+        recordCheckout("idempotent_replay");
         return recovered;
       }
     }
 
+    if (error instanceof HttpError) {
+      if (error.code === "INSUFFICIENT_STOCK") {
+        logger.info(
+          {
+            event: "checkout_insufficient_stock",
+            correlationId,
+            errorCode: error.code,
+          },
+          "Checkout rejected because of insufficient stock",
+        );
+        recordCheckout("insufficient_stock");
+      } else {
+        logger.info(
+          {
+            event: "checkout_failed",
+            correlationId,
+            errorCode: error.code,
+          },
+          "Checkout rejected",
+        );
+        recordCheckout("error");
+      }
+      throw error;
+    }
+
+    logger.error(
+      {
+        event: "checkout_failed",
+        correlationId,
+        errorCode: error instanceof Error ? error.name : "UNKNOWN",
+        err: error,
+      },
+      "Checkout failed unexpectedly",
+    );
+    recordCheckout("error");
     throw error;
   }
 }

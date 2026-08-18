@@ -1,4 +1,5 @@
 import type { FastifyInstance } from "fastify";
+import { checkoutTotal } from "../observability/metrics.js";
 import { checkout } from "../services/checkout-service.js";
 
 const errorResponseSchema = {
@@ -82,6 +83,15 @@ export async function checkoutRoutes(app: FastifyInstance) {
     async (request, reply) => {
       const idempotencyKey = request.headers["idempotency-key"];
       if (typeof idempotencyKey !== "string") {
+        request.log.info(
+          {
+            event: "checkout_failed",
+            correlationId: request.correlationId,
+            errorCode: "INVALID_REQUEST",
+          },
+          "Checkout rejected: missing Idempotency-Key",
+        );
+        checkoutTotal.inc({ result: "error" });
         return reply.status(400).send({
           code: "INVALID_REQUEST",
           message: "Idempotency-Key header is required",
@@ -92,7 +102,12 @@ export async function checkoutRoutes(app: FastifyInstance) {
         items: Array<{ productId: string; quantity: number }>;
       };
 
-      const result = await checkout(idempotencyKey, body.items, request.log);
+      const result = await checkout(
+        idempotencyKey,
+        body.items,
+        request.log,
+        request.correlationId,
+      );
       return reply.status(202).send(result);
     },
   );

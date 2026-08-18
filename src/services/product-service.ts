@@ -1,6 +1,11 @@
 import type { FastifyBaseLogger } from "fastify";
 import { prisma } from "../lib/prisma.js";
 import { ensureRedis, redis } from "../lib/redis.js";
+import {
+  cacheErrorsTotal,
+  cacheHitsTotal,
+  cacheMissesTotal,
+} from "../observability/metrics.js";
 
 export type PublicProduct = {
   id: string;
@@ -58,6 +63,7 @@ async function readProductsCache(
         { event: "products_cache_error" },
         "Redis unavailable, falling back to PostgreSQL",
       );
+      cacheErrorsTotal.inc();
       return { status: "error" };
     }
 
@@ -72,6 +78,7 @@ async function readProductsCache(
       { event: "products_cache_error", err: error },
       "Redis get failed, falling back to PostgreSQL",
     );
+    cacheErrorsTotal.inc();
     return { status: "error" };
   }
 }
@@ -87,6 +94,7 @@ async function writeProductsCache(
         { event: "products_cache_error" },
         "Redis unavailable, skip cache write",
       );
+      cacheErrorsTotal.inc();
       return;
     }
 
@@ -98,6 +106,7 @@ async function writeProductsCache(
       { event: "products_cache_error", err: error },
       "Redis set failed",
     );
+    cacheErrorsTotal.inc();
   }
 }
 
@@ -111,6 +120,7 @@ export async function invalidateProductsCache(
         { event: "products_cache_error" },
         "Redis unavailable, skip cache invalidation",
       );
+      cacheErrorsTotal.inc();
       return;
     }
 
@@ -120,6 +130,7 @@ export async function invalidateProductsCache(
       { event: "products_cache_error", err: error },
       "Redis del failed",
     );
+    cacheErrorsTotal.inc();
   }
 }
 
@@ -130,6 +141,7 @@ export async function listProducts(
 
   if (cached.status === "hit") {
     logger.info({ event: "products_cache_hit" }, "Products catalog cache hit");
+    cacheHitsTotal.inc();
     return cached.products;
   }
 
@@ -140,6 +152,7 @@ export async function listProducts(
           { event: "products_cache_miss" },
           "Products catalog cache miss",
         );
+        cacheMissesTotal.inc();
       }
 
       const products = await loadProductsFromDatabase();

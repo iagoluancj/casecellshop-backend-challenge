@@ -3,12 +3,14 @@ import { buildApp } from "./app.js";
 import { startOrderWorker } from "./background/order-worker.js";
 import { startOutboxPublisher } from "./background/outbox-publisher.js";
 import { createBullmqConnection, createOrderQueue } from "./lib/bullmq.js";
+import { bindQueueMetrics } from "./observability/metrics.js";
 
 const port = Number(process.env.PORT) || 3000;
 
 const app = await buildApp();
 const queueConnection = createBullmqConnection();
 const orderQueue = createOrderQueue(queueConnection);
+bindQueueMetrics(orderQueue);
 const publisher = startOutboxPublisher(orderQueue, app.log);
 const worker = startOrderWorker(app.log);
 
@@ -24,6 +26,7 @@ async function shutdown(signal: string) {
 
   try {
     await worker.close();
+    bindQueueMetrics(null);
     await orderQueue.close();
     await queueConnection.quit();
     await publisher.stop();
