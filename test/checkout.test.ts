@@ -36,7 +36,6 @@ describe("POST /checkout", () => {
 
   afterAll(async () => {
     await app.close();
-    await prisma.$disconnect();
   });
 
   beforeEach(async () => {
@@ -72,6 +71,14 @@ describe("POST /checkout", () => {
     expect(order.items[0]?.quantity).toBe(2);
     expect(order.items[0]?.unitPrice.toFixed(2)).toBe("10.00");
 
+    const outbox = await prisma.outboxEvent.findMany({
+      where: { orderId: body.orderId },
+    });
+    expect(outbox).toHaveLength(1);
+    expect(outbox[0]?.type).toBe("PROCESS_ORDER");
+    expect(outbox[0]?.status).toBe("PENDING");
+    expect(outbox[0]?.payload).toEqual({ orderId: body.orderId });
+
     const updated = await prisma.product.findUniqueOrThrow({
       where: { id: product.id },
     });
@@ -97,6 +104,7 @@ describe("POST /checkout", () => {
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({ code: "INSUFFICIENT_STOCK" });
     expect(await prisma.order.count()).toBe(0);
+    expect(await prisma.outboxEvent.count()).toBe(0);
 
     const unchanged = await prisma.product.findUniqueOrThrow({
       where: { id: product.id },
@@ -130,6 +138,7 @@ describe("POST /checkout", () => {
 
     expect(response.statusCode).toBe(409);
     expect(await prisma.order.count()).toBe(0);
+    expect(await prisma.outboxEvent.count()).toBe(0);
     expect(
       (await prisma.product.findUniqueOrThrow({ where: { id: productA.id } }))
         .stock,

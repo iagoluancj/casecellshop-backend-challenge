@@ -12,7 +12,12 @@ async function swaggerPlugin(app: FastifyInstance) {
         description: "Backend do desafio técnico CaseCellShop.",
         version: "0.1.0",
       },
-      tags: [{ name: "Health" }, { name: "Products" }, { name: "Checkout" }],
+      tags: [
+        { name: "Health" },
+        { name: "Products" },
+        { name: "Checkout" },
+        { name: "Orders" },
+      ],
     },
   });
 

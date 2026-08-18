@@ -37,6 +37,7 @@ model Order {
   requestFingerprint  String
   status              OrderStatus @default(PENDING)
   total               Decimal     @db.Decimal(12, 2)
+  stockReleasedAt     DateTime?
   createdAt           DateTime    @default(now())
   updatedAt           DateTime    @updatedAt
 

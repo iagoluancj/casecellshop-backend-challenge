@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { FastifyBaseLogger } from "fastify";
+import { OUTBOX_TYPE_PROCESS_ORDER } from "../config.js";
 import { Prisma } from "../generated/prisma/client.js";
 import { HttpError } from "../http-error.js";
 import { prisma } from "../lib/prisma.js";
@@ -140,7 +141,7 @@ export async function checkout(
         };
       });
 
-      return tx.order.create({
+      const order = await tx.order.create({
         data: {
           idempotencyKey,
           requestFingerprint: fingerprint,
@@ -151,6 +152,16 @@ export async function checkout(
           },
         },
       });
+
+      await tx.outboxEvent.create({
+        data: {
+          orderId: order.id,
+          type: OUTBOX_TYPE_PROCESS_ORDER,
+          payload: { orderId: order.id },
+        },
+      });
+
+      return order;
     });
 
     await invalidateProductsCache(logger);

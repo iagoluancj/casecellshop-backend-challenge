@@ -4,6 +4,7 @@ import { closeRedis, connectRedis } from "./lib/redis.js";
 import swaggerPlugin from "./plugins/swagger.js";
 import { checkoutRoutes } from "./routes/checkout.js";
 import { healthRoutes } from "./routes/health.js";
+import { ordersRoutes } from "./routes/orders.js";
 import { productsRoutes } from "./routes/products.js";
 
 export async function buildApp(options: FastifyServerOptions = {}) {
@@ -16,6 +17,7 @@ export async function buildApp(options: FastifyServerOptions = {}) {
   await app.register(healthRoutes);
   await app.register(productsRoutes);
   await app.register(checkoutRoutes);
+  await app.register(ordersRoutes);
 
   app.setErrorHandler((error, request, reply) => {
     if (error instanceof HttpError) {
