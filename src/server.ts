@@ -1,18 +1,22 @@
 import "dotenv/config";
 import { buildApp } from "./app.js";
+import { startOrderReconciler } from "./background/order-reconciler.js";
 import { startOrderWorker } from "./background/order-worker.js";
 import { startOutboxPublisher } from "./background/outbox-publisher.js";
+import { createDefaultFakeErp } from "./integrations/fake-erp.js";
 import { createBullmqConnection, createOrderQueue } from "./lib/bullmq.js";
 import { bindQueueMetrics } from "./observability/metrics.js";
 
 const port = Number(process.env.PORT) || 3000;
 
 const app = await buildApp();
+const erp = createDefaultFakeErp();
 const queueConnection = createBullmqConnection();
 const orderQueue = createOrderQueue(queueConnection);
 bindQueueMetrics(orderQueue);
 const publisher = startOutboxPublisher(orderQueue, app.log);
-const worker = startOrderWorker(app.log);
+const worker = startOrderWorker(app.log, erp);
+const reconciler = startOrderReconciler(erp, app.log);
 
 let shuttingDown = false;
 
@@ -26,6 +30,7 @@ async function shutdown(signal: string) {
 
   try {
     await worker.close();
+    await reconciler.stop();
     bindQueueMetrics(null);
     await orderQueue.close();
     await queueConnection.quit();

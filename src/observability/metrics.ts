@@ -1,3 +1,4 @@
+import { ORDER_RECONCILIATION_STALE_MS } from "../config.js";
 import type { Queue } from "bullmq";
 import {
   collectDefaultMetrics,
@@ -80,6 +81,13 @@ export const stockCompensationsTotal = new Counter({
   registers,
 });
 
+export const reconciliationTotal = new Counter({
+  name: "casecellshop_reconciliation_total",
+  help: "Stale PROCESSING order reconciliations",
+  labelNames: ["result"] as const,
+  registers,
+});
+
 export const httpRequestDurationSeconds = new Histogram({
   name: "casecellshop_http_request_duration_seconds",
   help: "HTTP request duration in seconds",
@@ -148,6 +156,28 @@ new Gauge({
   async collect() {
     try {
       this.set(await prisma.order.count({ where: { status: "PROCESSING" } }));
+    } catch {
+      this.set(0);
+    }
+  },
+});
+
+new Gauge({
+  name: "casecellshop_stale_processing_orders",
+  help: "PROCESSING orders older than ORDER_RECONCILIATION_STALE_MS",
+  registers,
+  async collect() {
+    try {
+      this.set(
+        await prisma.order.count({
+          where: {
+            status: "PROCESSING",
+            updatedAt: {
+              lt: new Date(Date.now() - ORDER_RECONCILIATION_STALE_MS),
+            },
+          },
+        }),
+      );
     } catch {
       this.set(0);
     }

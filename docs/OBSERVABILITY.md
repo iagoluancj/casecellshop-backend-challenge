@@ -15,7 +15,8 @@ Instrumentação local: logs estruturados (Pino/Fastify), `requestId`, `correlat
 | Worker | `order_processing_started/completed/retry/failed` | `casecellshop_worker_jobs_total{result}`, `worker_retries_total`, `worker_processing_duration_seconds` |
 | ERP | `erp_request_started/completed/timeout/error` | `casecellshop_erp_requests_total{result}`, `erp_request_duration_seconds` |
 | Compensação | `stock_compensation_completed/skipped` | `casecellshop_stock_compensations_total` |
-| Estado atual | — | `casecellshop_queue_waiting_jobs`, `orders_pending`, `orders_processing` |
+| Reconciliação | `order_reconciliation_started/completed/not_found/failed` | `casecellshop_reconciliation_total{result}`, `stale_processing_orders` |
+| Estado atual | — | `casecellshop_queue_waiting_jobs`, `orders_pending`, `orders_processing`, `stale_processing_orders` |
 
 `requestId` identifica uma requisição HTTP (`request.id` do Fastify). `correlationId` identifica a jornada de negócio e segue `POST /checkout` → Outbox payload → job BullMQ → Worker → ERP.
 
@@ -51,8 +52,9 @@ Poucos, com janela sustentada — não implementar Alertmanager nesta etapa.
 3. Taxa de `erp_timeout` elevada por 10 min.
 4. `queue_waiting_jobs` subindo de forma contínua.
 5. `orders_processing` alto por tempo incompatível com o timeout/retry configurado.
-6. Aumento de `worker_jobs_total{result="failed"}`.
-7. Hit ratio de cache caindo de forma sustentada (`hits/(hits+misses)`).
+6. `stale_processing_orders` > 0 de forma sustentada (PROCESSING acima de `ORDER_RECONCILIATION_STALE_MS`).
+7. Aumento de `worker_jobs_total{result="failed"}`.
+8. Hit ratio de cache caindo de forma sustentada (`hits/(hits+misses)`).
 
 ## Dashboard conceitual
 
@@ -78,6 +80,7 @@ PAINEL ASSÍNCRONO
 - worker completed / failed
 - retries
 - orders PENDING / PROCESSING
+- stale PROCESSING (gauge)
 
 PAINEL ERP
 - request rate

@@ -12,6 +12,8 @@ export class ErpTimeoutError extends Error {
   }
 }
 
+export type FakeErpOrderStatus = "COMPLETED" | "NOT_FOUND";
+
 export type FakeErpBehavior =
   | { mode: "success" }
   | { mode: "fail_always" }
@@ -50,6 +52,14 @@ export class FakeErp {
 
   wasProcessed(orderId: string): boolean {
     return this.processedOrderIds.has(orderId);
+  }
+
+  markProcessed(orderId: string): void {
+    this.processedOrderIds.add(orderId);
+  }
+
+  async getOrderStatus(orderId: string): Promise<FakeErpOrderStatus> {
+    return this.processedOrderIds.has(orderId) ? "COMPLETED" : "NOT_FOUND";
   }
 
   async processOrder(orderId: string, signal?: AbortSignal): Promise<void> {

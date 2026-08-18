@@ -25,6 +25,7 @@ flowchart TB
     Publisher[Outbox Publisher]
     Queue[Fila]
     Worker[Worker]
+    Reconciler[Order Reconciler]
   end
 
   subgraph obs["Observabilidade — transversal"]
@@ -49,17 +50,21 @@ flowchart TB
   Queue --> Worker
   Worker -->|operação de negócio| ERP
   Worker -->|atualiza status| Order
+  Reconciler -->|PROCESSING stale| Order
+  Reconciler -->|consulta status| ERP
   API -->|GET /orders/:orderId/status| Order
 
   Logs -.-> API
   Logs -.-> Publisher
   Logs -.-> Worker
+  Logs -.-> Reconciler
   Ids -.-> API
   Ids -.-> Worker
   Metrics -.-> Cache
   Metrics -.-> API
   Metrics -.-> Queue
   Metrics -.-> Worker
+  Metrics -.-> Reconciler
   Metrics -.-> ERP
 ```
 
@@ -105,6 +110,8 @@ Status do pedido: `PENDING`, `PROCESSING`, `COMPLETED`, `FAILED`.
 
 O status é consultado em `GET /orders/:orderId/status`.
 
+O Order Reconciler (polling interno, uma instância, ciclo de vida em `server.ts`) detecta `PROCESSING` com `updatedAt` acima de `ORDER_RECONCILIATION_STALE_MS` e consulta o ERP Fake. Não há endpoint HTTP. Várias instâncias exigiriam claim/lock/leader election — fora do escopo.
+
 ```mermaid
 sequenceDiagram
   actor Cliente
@@ -146,6 +153,7 @@ Instrumentação atual: `docs/OBSERVABILITY.md`.
 - fila e worker
 - latência e falhas da integração com o ERP
 - `GET /metrics` (Prometheus)
+- reconciliação de `PROCESSING` stale
 
 ## Decisões técnicas
 

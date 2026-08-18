@@ -40,6 +40,8 @@ describe("observability", () => {
     expect(response.body).toContain("casecellshop_");
     expect(response.body).toContain("casecellshop_cache_hits_total");
     expect(response.body).toContain("casecellshop_http_request_duration_seconds");
+    expect(response.body).toContain("casecellshop_reconciliation_total");
+    expect(response.body).toContain("casecellshop_stale_processing_orders");
   });
 
   it("GET /products incrementa miss e depois hit", async () => {
