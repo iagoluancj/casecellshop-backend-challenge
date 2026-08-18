@@ -32,8 +32,8 @@ export async function productsRoutes(app: FastifyInstance) {
         },
       },
     },
-    async () => {
-      return listProducts();
+    async (request) => {
+      return listProducts(request.log);
     },
   );
 }

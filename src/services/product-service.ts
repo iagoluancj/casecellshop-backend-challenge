@@ -1,4 +1,6 @@
+import type { FastifyBaseLogger } from "fastify";
 import { prisma } from "../lib/prisma.js";
+import { ensureRedis, redis } from "../lib/redis.js";
 
 export type PublicProduct = {
   id: string;
@@ -7,7 +9,21 @@ export type PublicProduct = {
   stock: number;
 };
 
-export async function listProducts(): Promise<PublicProduct[]> {
+export const PRODUCTS_CACHE_KEY = "products:list";
+
+const DEFAULT_TTL_SECONDS = 30;
+
+let inflightListProducts: Promise<PublicProduct[]> | null = null;
+
+function productsCacheTtlSeconds(): number {
+  const parsed = Number(process.env.PRODUCTS_CACHE_TTL_SECONDS);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed;
+  }
+  return DEFAULT_TTL_SECONDS;
+}
+
+async function loadProductsFromDatabase(): Promise<PublicProduct[]> {
   const products = await prisma.product.findMany({
     select: {
       id: true,
@@ -26,4 +42,113 @@ export async function listProducts(): Promise<PublicProduct[]> {
     price: product.price.toFixed(2),
     stock: product.stock,
   }));
+}
+
+async function readProductsCache(
+  logger: FastifyBaseLogger,
+): Promise<
+  | { status: "hit"; products: PublicProduct[] }
+  | { status: "miss" }
+  | { status: "error" }
+> {
+  try {
+    const connected = await ensureRedis(logger);
+    if (!connected) {
+      logger.error(
+        { event: "products_cache_error" },
+        "Redis unavailable, falling back to PostgreSQL",
+      );
+      return { status: "error" };
+    }
+
+    const raw = await redis.get(PRODUCTS_CACHE_KEY);
+    if (raw === null) {
+      return { status: "miss" };
+    }
+
+    return { status: "hit", products: JSON.parse(raw) as PublicProduct[] };
+  } catch (error) {
+    logger.error(
+      { event: "products_cache_error", err: error },
+      "Redis get failed, falling back to PostgreSQL",
+    );
+    return { status: "error" };
+  }
+}
+
+async function writeProductsCache(
+  products: PublicProduct[],
+  logger: FastifyBaseLogger,
+): Promise<void> {
+  try {
+    const connected = await ensureRedis(logger);
+    if (!connected) {
+      logger.error(
+        { event: "products_cache_error" },
+        "Redis unavailable, skip cache write",
+      );
+      return;
+    }
+
+    await redis.set(PRODUCTS_CACHE_KEY, JSON.stringify(products), {
+      EX: productsCacheTtlSeconds(),
+    });
+  } catch (error) {
+    logger.error(
+      { event: "products_cache_error", err: error },
+      "Redis set failed",
+    );
+  }
+}
+
+export async function invalidateProductsCache(
+  logger?: FastifyBaseLogger,
+): Promise<void> {
+  try {
+    const connected = await ensureRedis(logger);
+    if (!connected) {
+      logger?.error(
+        { event: "products_cache_error" },
+        "Redis unavailable, skip cache invalidation",
+      );
+      return;
+    }
+
+    await redis.del(PRODUCTS_CACHE_KEY);
+  } catch (error) {
+    logger?.error(
+      { event: "products_cache_error", err: error },
+      "Redis del failed",
+    );
+  }
+}
+
+export async function listProducts(
+  logger: FastifyBaseLogger,
+): Promise<PublicProduct[]> {
+  const cached = await readProductsCache(logger);
+
+  if (cached.status === "hit") {
+    logger.info({ event: "products_cache_hit" }, "Products catalog cache hit");
+    return cached.products;
+  }
+
+  if (!inflightListProducts) {
+    inflightListProducts = (async () => {
+      if (cached.status === "miss") {
+        logger.info(
+          { event: "products_cache_miss" },
+          "Products catalog cache miss",
+        );
+      }
+
+      const products = await loadProductsFromDatabase();
+      await writeProductsCache(products, logger);
+      return products;
+    })().finally(() => {
+      inflightListProducts = null;
+    });
+  }
+
+  return inflightListProducts;
 }
