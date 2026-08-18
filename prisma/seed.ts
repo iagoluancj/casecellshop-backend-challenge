@@ -41,7 +41,6 @@ async function seed() {
       update: {
         name: product.name,
         price: product.price,
-        stock: product.stock,
       },
     });
   }

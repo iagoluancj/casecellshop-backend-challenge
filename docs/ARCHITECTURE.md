@@ -162,4 +162,4 @@ Instrumentação atual: `docs/OBSERVABILITY.md`.
 - estratégia de concorrência/estoque
 - sincronização do Read Model
 - tracing
-- Docker
+- Docker Compose para avaliação: um processo `api` + `postgres` + `redis` (`docs/DOCKER.md`)

@@ -1,0 +1,66 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: casecellshop
+      POSTGRES_PASSWORD: casecellshop
+      POSTGRES_DB: casecellshop
+    volumes:
+      - casecellshop_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U casecellshop -d casecellshop"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - casecellshop_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "3000:3000"
+    environment:
+      PORT: "3000"
+      DATABASE_URL: postgresql://casecellshop:casecellshop@postgres:5432/casecellshop
+      REDIS_URL: redis://redis:6379
+      PRODUCTS_CACHE_TTL_SECONDS: "30"
+      OUTBOX_POLL_INTERVAL_MS: "1000"
+      ERP_TIMEOUT_MS: "1000"
+      ORDER_JOB_ATTEMPTS: "3"
+      ORDER_JOB_BACKOFF_MS: "200"
+      ERP_FAKE_MODE: success
+      ORDER_RECONCILIATION_STALE_MS: "15000"
+      ORDER_RECONCILIATION_INTERVAL_MS: "5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:3000/health').then((r)=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 40s
+
+volumes:
+  casecellshop_postgres_data:
+  casecellshop_redis_data:
