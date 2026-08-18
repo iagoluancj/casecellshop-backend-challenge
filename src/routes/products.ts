@@ -29,6 +29,16 @@ export async function productsRoutes(app: FastifyInstance) {
             type: "array",
             items: publicProductSchema,
           },
+          500: {
+            description: "Erro interno",
+            type: "object",
+            additionalProperties: false,
+            required: ["code", "message"],
+            properties: {
+              code: { type: "string" },
+              message: { type: "string" },
+            },
+          },
         },
       },
     },

@@ -120,26 +120,6 @@ export async function checkout(
         products.map((product) => [product.id, product]),
       );
 
-      for (const item of normalizedItems) {
-        const updated = await tx.product.updateMany({
-          where: {
-            id: item.productId,
-            stock: { gte: item.quantity },
-          },
-          data: {
-            stock: { decrement: item.quantity },
-          },
-        });
-
-        if (updated.count !== 1) {
-          throw new HttpError(
-            409,
-            "INSUFFICIENT_STOCK",
-            "Estoque insuficiente para um ou mais produtos",
-          );
-        }
-      }
-
       let total = new Prisma.Decimal(0);
       const orderItems = normalizedItems.map((item) => {
         const product = productsById.get(item.productId);
@@ -185,6 +165,26 @@ export async function checkout(
           payload,
         },
       });
+
+      for (const item of normalizedItems) {
+        const updated = await tx.product.updateMany({
+          where: {
+            id: item.productId,
+            stock: { gte: item.quantity },
+          },
+          data: {
+            stock: { decrement: item.quantity },
+          },
+        });
+
+        if (updated.count !== 1) {
+          throw new HttpError(
+            409,
+            "INSUFFICIENT_STOCK",
+            "Estoque insuficiente para um ou mais produtos",
+          );
+        }
+      }
 
       return created;
     });

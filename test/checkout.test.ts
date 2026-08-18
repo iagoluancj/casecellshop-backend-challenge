@@ -256,6 +256,42 @@ describe("POST /checkout", () => {
     ).toBe(4);
   });
 
+  it("mesma chave concorrente com estoque just-enough devolve um único pedido", async () => {
+    const product = await createProduct({
+      name: "Capinha E",
+      price: "10.00",
+      stock: 1,
+    });
+    const key = randomUUID();
+    const payload = {
+      items: [{ productId: product.id, quantity: 1 }],
+    };
+
+    const [first, second] = await Promise.all([
+      app.inject({
+        method: "POST",
+        url: "/checkout",
+        headers: { "idempotency-key": key },
+        payload,
+      }),
+      app.inject({
+        method: "POST",
+        url: "/checkout",
+        headers: { "idempotency-key": key },
+        payload,
+      }),
+    ]);
+
+    expect(first.statusCode).toBe(202);
+    expect(second.statusCode).toBe(202);
+    expect(first.json().orderId).toBe(second.json().orderId);
+    expect(await prisma.order.count()).toBe(1);
+    expect(
+      (await prisma.product.findUniqueOrThrow({ where: { id: product.id } }))
+        .stock,
+    ).toBe(0);
+  });
+
   it("rejeita a mesma chave com payload diferente", async () => {
     const productA = await createProduct({
       name: "Produto A",

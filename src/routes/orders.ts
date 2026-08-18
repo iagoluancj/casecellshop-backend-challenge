@@ -44,6 +44,10 @@ export async function ordersRoutes(app: FastifyInstance) {
             description: "Pedido não encontrado",
             ...errorResponseSchema,
           },
+          500: {
+            description: "Erro interno",
+            ...errorResponseSchema,
+          },
         },
       },
     },

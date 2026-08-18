@@ -192,9 +192,12 @@ export async function processOrder(
     return;
   }
 
-  if (order.status === "PENDING") {
+  if (order.status === "PENDING" || order.status === "PROCESSING") {
     await prisma.order.updateMany({
-      where: { id: orderId, status: "PENDING" },
+      where: {
+        id: orderId,
+        status: { in: ["PENDING", "PROCESSING"] },
+      },
       data: { status: "PROCESSING" },
     });
   }
@@ -213,10 +216,16 @@ export async function processOrder(
 
   try {
     await callErp(orderId, deps, timeoutMs);
-    await prisma.order.update({
-      where: { id: orderId },
+    const completed = await prisma.order.updateMany({
+      where: {
+        id: orderId,
+        status: { in: ["PENDING", "PROCESSING"] },
+      },
       data: { status: "COMPLETED" },
     });
+    if (completed.count !== 1) {
+      return;
+    }
     workerJobsTotal.inc({ result: "completed" });
     workerProcessingDurationSeconds.observe(
       { result: "completed" },

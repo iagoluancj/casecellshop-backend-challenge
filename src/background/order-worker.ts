@@ -80,8 +80,13 @@ export function startOrderWorker(
       return;
     }
 
-    void job.getState().then(async (state) => {
-      if (state === "failed") {
+    void job
+      .getState()
+      .then(async (state) => {
+        if (state !== "failed") {
+          return;
+        }
+
         await failOrderAndReleaseStock(
           job.data.orderId,
           logger.child({
@@ -90,8 +95,18 @@ export function startOrderWorker(
           }),
           job.data.correlationId,
         );
-      }
-    });
+      })
+      .catch((compensationError: unknown) => {
+        logger.error(
+          {
+            event: "stock_compensation_failed",
+            orderId: job.data.orderId,
+            correlationId: job.data.correlationId,
+            err: compensationError,
+          },
+          "Stock compensation after job failure threw",
+        );
+      });
   });
 
   return {

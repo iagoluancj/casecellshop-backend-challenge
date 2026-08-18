@@ -15,8 +15,7 @@ flowchart TB
   end
 
   subgraph loja["Backend da loja — um único sistema"]
-    Sync[Sincronização do Read Model]
-    RM[(Read Model / Product Repository)]
+    RM[(Product local)]
     Cache[Cache]
     API[API Fastify]
 
@@ -34,8 +33,6 @@ flowchart TB
     Metrics[Métricas: cache, checkout, fila/worker, ERP, latência, retries, FAILED]
   end
 
-  ERP -->|leitura| Sync
-  Sync --> RM
   RM --> Cache
   Cache --> API
   RM --> API
@@ -70,20 +67,16 @@ flowchart TB
 
 ## Catálogo
 
-`GET /products` consulta o cache primeiro. Em miss, a API lê o Read Model, que é uma cópia local sincronizada a partir do ERP.
-
-Essa leitura admite consistência eventual: o catálogo não precisa refletir o ERP em tempo real. O estoque exibido na vitrine não é garantia para o checkout.
+`GET /products` consulta o cache primeiro. Em miss, a API lê a tabela local `Product` — um read model **simulado**. Neste desafio não há sincronização automática com um MySQL de ERP: o catálogo entra pelo seed. O estoque da vitrine não é garantia para o checkout.
 
 ```mermaid
 flowchart LR
-  ERP[(ERP<br/>MySQL)]
-  Sync[Sincronização]
-  RM[(Read Model)]
+  RM[(Product local)]
   Cache[Cache]
   API[API]
   Client[Cliente]
 
-  ERP --> Sync --> RM --> Cache --> API --> Client
+  RM --> Cache --> API --> Client
 
   Client -->|GET /products| API
   API -->|miss| RM
@@ -157,9 +150,9 @@ Instrumentação atual: `docs/OBSERVABILITY.md`.
 
 ## Decisões técnicas
 
-- cache em memória vs Redis
-- fila local/simulada vs broker
-- estratégia de concorrência/estoque
-- sincronização do Read Model
-- tracing
+- cache Redis cache-aside; fallback para PostgreSQL se o Redis falhar
+- fila BullMQ no Redis (mesma instância do cache, responsabilidades distintas)
+- estoque com `UPDATE ... WHERE stock >= quantity` na transação do checkout
+- `Product` local/seed; sem sync com ERP MySQL
+- sem tracing/OpenTelemetry neste recorte
 - Docker Compose para avaliação: um processo `api` + `postgres` + `redis` (`docs/DOCKER.md`)

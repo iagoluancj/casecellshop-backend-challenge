@@ -52,7 +52,8 @@ export async function checkoutRoutes(app: FastifyInstance) {
         },
         response: {
           202: {
-            description: "Checkout aceito e persistido como PENDING",
+            description:
+              "Checkout aceito. Replay da mesma Idempotency-Key devolve o pedido existente, cujo status pode já ter avançado.",
             type: "object",
             additionalProperties: false,
             required: ["orderId", "status"],
@@ -75,6 +76,10 @@ export async function checkoutRoutes(app: FastifyInstance) {
           409: {
             description:
               "Estoque insuficiente ou Idempotency-Key reutilizada com payload diferente",
+            ...errorResponseSchema,
+          },
+          500: {
+            description: "Erro interno",
             ...errorResponseSchema,
           },
         },

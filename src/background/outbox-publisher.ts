@@ -159,6 +159,9 @@ export function startOutboxPublisher(
   return {
     async stop() {
       clearInterval(timer);
+      while (inFlight) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
     },
   };
 }
