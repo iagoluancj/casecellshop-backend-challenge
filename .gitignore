@@ -1,5 +1,7 @@
 node_modules
 dist
+generated
+src/generated
 .env
 *.log
 npm-debug.log*
